@@ -1,19 +1,31 @@
 library(shinydashboard)
 library(shiny)
 library(bslib)
+library(reticulate)
 source('connexion.R')
 library(reticulate)
 library(ggraph)
 source("BD.R")
-use_virtualenv("neo4j_env", required = TRUE)
+library(neo4r)
+library(dplyr)
+library(tidygraph)
+library(ggraph)
+library(DT)
+#connexion()
+#use_virtualenv("neo4j_env", required = TRUE)
+
 Var<-c("ElementsExamenClinique","ElementsExamenParaclinique","Diagnostique","Traitement","DecouvertePresOperatoires","suiviPostOperatoireOuComplication")
 ui<-dashboardPage(
   dashboardHeader(title = "Bienvenu Dr Boob"),
-  dashboardSidebar("Les axes d' analyses ",
+  dashboardSidebar("MENU ",
                    sidebarMenu(
-                     menuItem("Enregistrement",tabName = "Enregistrement"),
-                     menuItem("Consultation",tabName = "Consultation"),
-                     menuItem("Analyse",tabName = "Analyse"),
+                     menuItem("Enregistrement",tabName = "Enregistrement",icon = icon("user-plus")),
+                     menuItem("Consultation",tabName = "Consultation",icon = icon("stethoscope")),
+                     menuItem("Affichage",tabName = "Analyse",icon = icon("eye"),startExpanded = F,
+                              menuSubItem("Affichage des patients",tabName = "Affichage"),
+                              menuSubItem("Affichage des consultations",tabName = "consultation")
+                              ),
+                     menuItem("Gestion",tabName = "Supression",icon = icon("trash")),
                      selectInput("axe","Choisir un axe",choices = c("Jour","Mois","Annee")),
                      dateInput("date","Entrer une datte")
                    )
@@ -65,17 +77,18 @@ ui<-dashboardPage(
     ),
     tabItems(
       tabItem(tabName = "Enregistrement",
-              fluidRow(box(width=12,box("Information sur le patient",width=12,textInput("nom","Nom du patient"),textInput("prenom",'Prenom du patient'),numericInput("age","Age du patient",value = 0),selectInput('sexe',"Sexe",choices = c("M","F"))),
-                           box("Du statut du Patient",width = 12,textInput("region","Entrer votre région d'origine "),textInput("quartier","Quartier"),textInput("numero","Numero"),textInput("profession","Profession"),textInput("etude","Niveau d'etude")))
-                       ),
-              actionButton("confirm1","Enregistrement")
+              fluidRow(box("Information sur le patient",width=12,textInput("nom","Nom du patient"),textInput("prenom",'Prenom du patient'),numericInput("age","Age du patient",value = 0),selectInput('sexe',"Sexe",choices = c("M","F")) ),
+                           box( "Du statut du Patient",width = 12,textInput("region","Entrer votre région d'origine "),textInput("quartier","Quartier"),textInput("numero","Numero"),textInput("profession","Profession"),textInput("etude","Niveau d'etude") )) ,
+                       
+              actionButton("confirm1","Enregistrement",icon = icon("check"), class = "btn-success")
               ),
       tabItem(
         tabName = "Consultation",box(width=12,title = "Séléctionner un élément de consultation",selectInput("consult","Element de consultation",choices =Var ),textInput("patient","Selectionner un patient")),
         
-        uiOutput("ZoneDeSaisie"),
+        uiOutput("ZoneDeSaisie"),fileInput('imageExamen',"Téléverser une image",accept = c("image/png","image/jpeg"))
+        
       ),
-      tabItem(tabName = "Analyse",fluidRow(box("Image1",width = 4,plotOutput('fig1')),
+      tabItem(tabName = "AnalyseGlobale",fluidRow(box("Image1",width = 4,plotOutput('fig1')),
                                            box("Image2",width=4,plotOutput("fig2")),
                                            box("Image3",width=4,plotOutput("fig3"))
                                            ),
@@ -85,12 +98,20 @@ ui<-dashboardPage(
                        box("Image7",width=3,plotOutput("h7"))
                        )
               ),
-      tabItem(tabName = "Prediction")
+      tabItem(tabName = "Affichage",DTOutput("lesPatients")),
+      tabItem(tabName = "consultation",DTOutput("consult")),
+      tabItem(tabName = "Supression",
+              fluidRow(box(width=12,
+                           textInput("numASuprimer","Entrer le numéreau du patient à suprimer"),
+                           actionButton("suprimer","Suprimer") )
+                       
+              )
     )
   )
-)
+))
 
 server<-function(input,output){
+  
   observeEvent(input$confirm1,{
     nom<-input$nom;
     prenom<-input$prenom;
@@ -118,17 +139,48 @@ server<-function(input,output){
     ZoneSaisie(input$consult,input$patient)
   });
   observeEvent(input$confirm2,{
-    if(relationPatientEvenement(input$patient,input$dateConsultation,input$consult,input$operations)){
-      showModal(modalDialog('Succes',"Votre enregistrement a bien été pris en compte",easyClose = T,footer = modalButton("Continuer")))
-    }
-    else{
-      showModal(modalDialog('Erreur',"Une erreur s'est produite",easyClose = T,footer = modalButton("Reprendre")))
-    }
+    withProgress(message = "Enregistrement en cours ...",value = 0.5,{
+      if(relationPatientEvenement(input$patient,input$dateConsultation,input$consult,input$operations)){
+        showModal(modalDialog('Succes',"Votre enregistrement a bien été pris en compte",easyClose = T,footer = modalButton("Continuer")))
+      }
+      else{
+        showModal(modalDialog('Erreur',"Une erreur s'est produite",easyClose = T,footer = modalButton("Reprendre")))
+      }
+    })
   });
   observeEvent(input$confirm3,{
     enregistrerElementConsultation(input$consult,input$caracteristique);
     creerRelation(input$patient,input$consult,input$dateConsultation)
   });
+  observeEvent(input$imageExamen,{
+    req(input$imageExamen)
+    if(!dir.exists("www/examens")){
+      dir.create("www/examens",recursive=T)
+    }
+    nomFichier<-paste0("www/examens/",input$patient,'_',Sys.Date(),"_",input$imageExamen$name)
+    file.copy(input$imageExamen$datapath,nomFichier)
+    showModal(modalDialog("Succés","Image enregistrée"))
+  })
+  output$lesPatients <- renderDT({
+    datatable(lesPatients(), options = list(pageLength = 10))
+  })
+  output$consult<-renderDT({
+    datatable(lesConsultations())
+  })
+  observeEvent(input$suprimer,{
+    removeModal()
+    tryCatch({
+      Suprimer(input$numASuprimer)
+      showModal(
+        modalDialog(title = "Succés","Votre supression a bien été prise en compte",footer = modalButton("OK"),easyClose = T)
+      )
+    },error=function(e){
+      print(e$message)
+      showModal(
+        modalDialog(title = "Erreur","Votre supression n'a pas été prise en compte",footer = modalButton("OK"),easyClose = T)
+      )
+    })
+  })
   
 }
 
